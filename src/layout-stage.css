@@ -1,0 +1,42 @@
+.stage-deck-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+.deck-hit {
+  cursor: grab;
+}
+.deck-hit:active {
+  cursor: grabbing;
+}
+.deck-controls {
+  visibility: hidden;
+}
+.layout-stage:has(.deck-hit:hover) .deck-controls,
+.deck-controls.selected,
+.deck-controls:hover {
+  visibility: visible;
+}
+.deck-outline,
+.deck-grip {
+  stroke: #138163;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+.deck-outline {
+  fill: none;
+}
+.deck-grip {
+  fill: #fff;
+}
+.deck-handle[data-corner='nw'],
+.deck-handle[data-corner='se'] {
+  cursor: nwse-resize;
+}
+.deck-handle[data-corner='ne'],
+.deck-handle[data-corner='sw'] {
+  cursor: nesw-resize;
+}

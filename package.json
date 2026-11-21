@@ -1,0 +1,93 @@
+{
+  "name": "mooc-studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "按页制作、可返修的数字人慕课工作台",
+  "type": "module",
+  "main": "dist-desktop/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build && node scripts/build.mjs",
+    "start": "electron .",
+    "server": "tsx server/index.ts",
+    "test": "tsx --test tests/*.test.ts",
+    "test:ui": "playwright test",
+    "typecheck": "tsc --noEmit",
+    "package:win": "npm run build && electron-builder --win nsis --x64",
+    "package:dir": "npm run build && electron-builder --dir --win --x64",
+    "setup:cloud": "node scripts/setup-cloud.mjs",
+    "build:server": "node scripts/build-server.mjs",
+    "format": "prettier --write src desktop shared server tests scripts",
+    "setup:media": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-media.ps1"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.900.0",
+    "@aws-sdk/s3-request-presigner": "^3.900.0",
+    "@napi-rs/canvas": "^0.1.80",
+    "@noble/hashes": "^1.8.0",
+    "fast-xml-parser": "^5.3.0",
+    "fastify": "^5.6.0",
+    "fflate": "^0.8.2",
+    "lucide-react": "^0.468.0",
+    "pdfjs-dist": "^6.2.108",
+    "pg": "^8.16.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "@types/node": "^24.10.0",
+    "@types/pg": "^8.15.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "electron": "45.3.3",
+    "electron-builder": "^26.0.12",
+    "esbuild": "^0.25.0",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
+    "prettier": "^3.10.1",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vite": "^7.2.0"
+  },
+  "build": {
+    "appId": "cn.moocstudio.desktop",
+    "productName": "慕课工坊",
+    "directories": {
+      "output": "release/production-history"
+    },
+    "files": [
+      "dist/**",
+      "dist-desktop/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/@napi-rs/**",
+      "node_modules/pdfjs-dist/**"
+    ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "resources"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "overrides": {
+    "minimatch": "^11.0.1"
+  }
+}
