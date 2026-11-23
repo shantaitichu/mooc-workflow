@@ -31,6 +31,31 @@ export interface TimelinePage {
   compositionId?: string;
   videoId?: string;
 }
+// Some imported projects retain the full take without every sentence file.
+export function narrationDurations(course: Course, slide: Slide, durationMs: number) {
+  const segments = segmentsFor(slide);
+  const measured = segments.map((s) => currentArtifact(course, slide, 'audio', s)?.durationMs);
+  const known = measured.reduce<number>((sum, ms) => sum + (ms ?? 0), 0);
+  const weights = segments.map((s, i) =>
+    measured[i] === undefined ? Math.max(1, estimatedDuration(s.text, speechFor(course, slide))) : 0,
+  );
+  const totalWeight = weights.reduce((a, b) => a + b, 0);
+  const durations = measured.map(
+    (ms, i) => ms ?? (Math.max(0, durationMs - known) * weights[i]) / totalWeight,
+  );
+  const total = durations.reduce((a, b) => a + b, 0);
+  let sum = 0,
+    last = 0;
+  return durations.map((ms, i) => {
+    sum += ms;
+    const end = total
+      ? Math.round((durationMs * sum) / total)
+      : Math.round((durationMs * (i + 1)) / durations.length);
+    const length = end - last;
+    last = end;
+    return length;
+  });
+}
 export function editTimeline(course: Course): TimelinePage[] {
   let cursor = 0;
   return course.slides.map((slide) => {
@@ -41,9 +66,15 @@ export function editTimeline(course: Course): TimelinePage[] {
     const whole = !!(slide.recordedAudioId || slide.keepBackgroundAudio);
     const source = course.assets.find((a) => a.id === (slide.recordedAudioId ?? slide.backgroundAssetId));
     const finished = currentArtifact(course, slide, 'composition');
-    for (const segment of segmentsFor(slide)) {
+    const narration = currentArtifact(course, slide, 'audio');
+    const measured = narration && narrationDurations(course, slide, narration.durationMs);
+    for (const [i, segment] of segmentsFor(slide).entries()) {
       const audio = currentArtifact(course, slide, 'audio', segment);
-      const offset = whole && !slide.recordedAudioId && !audio ? slide.backgroundStartMs : 0;
+      const offset = narration
+        ? cursor - start
+        : whole && !slide.recordedAudioId && !audio
+          ? slide.backgroundStartMs
+          : 0;
       const originalLength = slide.recordedAudioId
         ? source?.info.durationMs
         : Math.max(
@@ -52,9 +83,10 @@ export function editTimeline(course: Course): TimelinePage[] {
               slide.backgroundStartMs,
           );
       const duration =
+        measured?.[i] ??
         audio?.durationMs ??
         (whole && originalLength ? originalLength : Math.max(40, estimatedDuration(segment.text, settings)));
-      const assetId = audio?.assetId ?? (whole ? source?.id : undefined);
+      const assetId = narration?.assetId ?? audio?.assetId ?? (whole ? source?.id : undefined);
       const parts = whole && slide.segments.length ? slide.segments : [segment];
       const weights = parts.map((s) => Math.max(1, estimatedDuration(s.text, settings)));
       const totalWeight = weights.reduce((a, b) => a + b, 0);
@@ -70,7 +102,7 @@ export function editTimeline(course: Course): TimelinePage[] {
           end: cursor + end,
           assetId,
           offset: offset + previous,
-          estimated: !assetId || (whole && parts.length > 1),
+          estimated: !assetId || (!!narration && !audio && !whole) || (whole && parts.length > 1),
           editable: !whole,
         });
         previous = end;

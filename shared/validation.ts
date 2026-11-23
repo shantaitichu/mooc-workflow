@@ -35,7 +35,6 @@ export const courseSchema = z.object({
   updatedAt: z.string(),
   speech,
   composition,
-  transitionMs: z.number().int().min(0).max(2000).optional(),
   layoutPresets: z
     .array(z.object({ id: z.string().max(100), name: z.string().min(1).max(80), settings: composition }))
     .max(200)
@@ -64,7 +63,14 @@ export const courseSchema = z.object({
         layoutPresetId: z.string().max(100).optional(),
         motionId: z.uuid().optional(),
         motionTrack: z
-          .array(z.object({ id: z.uuid(), motionId: z.uuid(), startMs: z.number().int().nonnegative() }))
+          .array(
+            z.object({
+              id: z.uuid(),
+              motionId: z.uuid(),
+              startMs: z.number().int().nonnegative(),
+              anchorMs: z.number().int().nonnegative().optional(),
+            }),
+          )
           .max(500)
           .optional(),
         videoTake: z.number().int().nonnegative().optional(),
@@ -76,8 +82,6 @@ export const courseSchema = z.object({
         shortBackground: z.enum(['loop', 'freeze']),
         keepBackgroundAudio: z.boolean(),
         pagePauseMs: z.number().int().min(0).max(10000),
-        reviewedFingerprint: z.string().optional(),
-        approvedSampleFingerprint: z.string().optional(),
       }),
     )
     .max(500),
@@ -112,6 +116,8 @@ export const courseSchema = z.object({
           referenceHash: z.string().optional(),
           sourceClip: z.string().max(128).optional(),
           cutId: z.uuid().optional(),
+          origin: z.literal('local').optional(),
+          anchorMs: z.number().int().nonnegative().optional(),
           preset: z.enum(['explain', 'emphasize', 'nod', 'greet', 'close']),
           assetId: z.uuid(),
           reviewed: z.boolean(),

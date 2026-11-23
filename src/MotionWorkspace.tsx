@@ -3,10 +3,10 @@ import { ArrowRight, Clapperboard, Film, FolderOpen, RefreshCw, Trash2 } from 'l
 import type { Course, MotionAsset, MotionCut, SavedMotionCut } from '../shared/types';
 import { readyMotion } from '../shared/domain';
 import { removeLibraryMotion } from '../shared/edit-timeline';
-import { MotionTrim } from './MotionTrim';
+import { FrameInput, MotionTrim } from './MotionTrim';
 import { SavedCutList } from './SavedCutList';
 import { OpenMediaLocation } from './OpenMediaLocation';
-import { findSavedCut } from '../shared/motion-track';
+import { findSavedCut, snapMs } from '../shared/motion-track';
 import { api } from './api';
 import './motion-workspace.css';
 
@@ -160,6 +160,15 @@ export function MotionWorkspace({ course, accountId, cloudUrl, busy, run, goTo }
       setMessage('已删除选段「' + cut.name + '」。');
     });
   }
+  function saveAnchor(id: string, ms: number) {
+    void run('保存动作关键帧', async (c) => {
+      const next = structuredClone(c);
+      const motion = next.speaker.motions.find((m) => m.id === id);
+      if (!motion) throw new Error('动作已移除。');
+      motion.anchorMs = ms;
+      await api.saveCourse(next);
+    });
+  }
   function restore(m: MotionAsset) {
     void run('恢复动作', async (c) => {
       const copy = structuredClone(c);
@@ -204,6 +213,12 @@ export function MotionWorkspace({ course, accountId, cloudUrl, busy, run, goTo }
         course={course}
         busy={busy}
         generate={generate}
+        addLocal={(cut) =>
+          void run('加入动作库', async (c) => {
+            await api.addLocalMotion(c.id, cut.id, 'cut');
+            setMessage('「' + cut.name + '」已入库，可设置关键帧后拖入动作轨。');
+          })
+        }
         remove={removeCut}
         problem={!idle ? '生成动作前，请在讲师档案设置动态待机视频。' : serviceProblem}
         connectionAction={
@@ -216,6 +231,21 @@ export function MotionWorkspace({ course, accountId, cloudUrl, busy, run, goTo }
           <h2>
             <Clapperboard size={18} /> 动作库 <small>{available.length} 段</small>
           </h2>
+          <button
+            className="button"
+            disabled={!!busy}
+            onClick={() =>
+              void run('导入动作片段', async (c) => {
+                const result = await api.importAsset(c.id, 'video');
+                if (result) {
+                  await api.addLocalMotion(c.id, result.asset.id, 'video');
+                  setMessage('片段已加入动作库。');
+                }
+              })
+            }
+          >
+            导入透明视频片段
+          </button>
           <button className="button" onClick={() => goTo('editor')}>
             去课程编排 <ArrowRight size={14} />
           </button>
@@ -236,7 +266,10 @@ export function MotionWorkspace({ course, accountId, cloudUrl, busy, run, goTo }
                   />
                   <div>
                     <strong>{m.name}</strong>
-                    <span>{((asset.info.durationMs ?? 0) / 1000).toFixed(2)} 秒 · 可用于课程</span>
+                    <span>
+                      {((asset.info.durationMs ?? 0) / 1000).toFixed(2)} 秒 ·{' '}
+                      {m.origin === 'local' ? '原始片段' : '待机衔接素材'}
+                    </span>
                     <button
                       aria-label="删除动作"
                       title={'删除「' + m.name + '」'}
@@ -247,6 +280,33 @@ export function MotionWorkspace({ course, accountId, cloudUrl, busy, run, goTo }
                     </button>
                   </div>
                   <OpenMediaLocation courseId={course.id} id={asset.id} />
+                  <div className="motion-anchor">
+                    <FrameInput
+                      label="动作关键帧（素材内秒）"
+                      min={0}
+                      max={Math.max(0, snapMs(asset.info.durationMs ?? 40) - 40)}
+                      value={m.anchorMs ?? 0}
+                      onCommit={(ms) => saveAnchor(m.id, ms)}
+                    />
+                    <button
+                      className="button"
+                      disabled={!!busy}
+                      onClick={(e) => {
+                        const video = e.currentTarget.closest('article')?.querySelector('video');
+                        if (!video) return;
+                        video.pause();
+                        saveAnchor(
+                          m.id,
+                          Math.min(
+                            Math.max(0, snapMs(asset.info.durationMs ?? 40) - 40),
+                            snapMs(video.currentTime * 1000),
+                          ),
+                        );
+                      }}
+                    >
+                      将预览当前帧设为关键帧
+                    </button>
+                  </div>
                   <MotionOptions
                     motion={m}
                     busy={!!busy}

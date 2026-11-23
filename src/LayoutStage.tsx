@@ -54,6 +54,8 @@ export function LayoutStage({
   playing,
   caption,
   presenterId,
+  join,
+  passive = false,
 }: {
   course: Course;
   slide: Slide;
@@ -63,6 +65,8 @@ export function LayoutStage({
   playing: boolean;
   caption: string;
   presenterId?: string;
+  join?: { src: string; startMs: number };
+  passive?: boolean;
 }) {
   const [draft, setDraft] = useState<{ slideId: string; settings: Partial<CompositionSettings> }>();
   const options = compositionFor(course, slide);
@@ -168,18 +172,27 @@ export function LayoutStage({
   }
   const presenterTime = Math.min(timeMs, Math.max(0, (Math.round(durationMs / 40) - 1) * 40));
   const usesPhoto = slide.videoModel === 'omnihuman-1.5';
-  let action: { assetId: string; startMs: number; durationMs: number; sourceMs: number } | undefined;
+  type Action = { assetId: string; startMs: number; durationMs: number; sourceMs: number; inMs?: number };
+  let action: Action | undefined, upcoming: Action | undefined;
   try {
-    const cue = resolveTrack(course, slide, durationMs)
-      .filter((t) => readyMotion(course, t.motion))
-      .find((c) => presenterTime >= c.startMs && presenterTime < c.startMs + c.durationMs);
-    if (cue)
-      action = {
-        assetId: cue.asset.id,
-        startMs: cue.startMs,
-        durationMs: cue.durationMs,
-        sourceMs: cue.asset.info.durationMs ?? cue.durationMs,
-      };
+    if (!presenterId && !usesPhoto && !slide.motionId) {
+      for (const cue of resolveTrack(course, slide, durationMs)) {
+        if (cue.startMs > presenterTime + 600) break;
+        if (cue.startMs + cue.durationMs <= presenterTime || !readyMotion(course, cue.motion)) continue;
+        const clip = {
+          assetId: cue.asset.id,
+          startMs: cue.startMs,
+          durationMs: cue.durationMs,
+          sourceMs: cue.sourceMs,
+          inMs: cue.inMs,
+        };
+        if (cue.startMs <= presenterTime) action = clip;
+        else {
+          upcoming = clip;
+          break;
+        }
+      }
+    }
   } catch {
     /* invalid markers remain editable in the track */
   }
@@ -213,26 +226,15 @@ export function LayoutStage({
       sourceMs: clipMs,
     };
   }
-  const fade = action ? Math.max(40, Math.min(240, Math.floor((action.durationMs / 40 - 1) / 2) * 40)) : 240;
-  const actionOpacity =
-    action && !presenterId && !usesPhoto
-      ? Math.max(
-          0,
-          Math.min(
-            1,
-            (presenterTime - action.startMs) / fade,
-            (action.startMs + action.durationMs - 40 - presenterTime) / fade,
-          ),
-        )
-      : 0;
-  const presenter = (id: string, time: number, fromDriver: boolean) => (
+  const activeAction = !presenterId && !usesPhoto ? action : undefined;
+  const presenter = (id: string, time: number, fromDriver: boolean, play = playing) => (
     <PresenterVideo
       box={person}
       src={url(id)}
       info={course.assets.find((a) => a.id === id)?.info}
       driverReference={fromDriver ? idleDimensions : undefined}
       time={time}
-      playing={playing && timeMs < durationMs}
+      playing={play && timeMs < durationMs}
     />
   );
   const assetId = slide.assetId;
@@ -254,71 +256,73 @@ export function LayoutStage({
       className="layout-stage"
       viewBox="0 0 1920 1080"
     >
-      <rect
-        className="canvas-background"
-        width={stageWidth}
-        height={stageHeight}
-        fill={options.backgroundColor}
-      />
-      {bg &&
-        (bg.kind === 'video' ? (
-          <foreignObject x="0" y="0" width="1920" height="1080">
-            <SyncedVideo src={url(bg.id)} time={bgTime} playing={playing} />
-          </foreignObject>
+      <g>
+        <rect
+          className="canvas-background"
+          width={stageWidth}
+          height={stageHeight}
+          fill={options.backgroundColor}
+        />
+        {bg &&
+          (bg.kind === 'video' ? (
+            <foreignObject x="0" y="0" width="1920" height="1080">
+              <SyncedVideo src={url(bg.id)} time={bgTime} playing={playing} />
+            </foreignObject>
+          ) : (
+            image(bg.id, full)
+          ))}
+        {showDeck ? (
+          <g>
+            <foreignObject x={deck.x} y={deck.y} width={deck.w} height={deck.h} pointerEvents="none">
+              <img
+                key={assetId}
+                className="stage-deck-image"
+                src={url(assetId)}
+                alt=""
+                draggable={false}
+                onLoad={(event) => {
+                  const { naturalWidth, naturalHeight } = event.currentTarget;
+                  if (naturalWidth && naturalHeight)
+                    setNaturalSize({ id: assetId, ratio: naturalWidth / naturalHeight });
+                }}
+              />
+            </foreignObject>
+            {!playing && !passive && (
+              <rect
+                className="deck-hit"
+                aria-label="拖动 PPT 位置"
+                x={picture.x}
+                y={picture.y}
+                width={picture.w}
+                height={picture.h}
+                fill="transparent"
+                onPointerDown={(e) => begin(e, 'deck')}
+              />
+            )}
+          </g>
         ) : (
-          image(bg.id, full)
-        ))}
-      {showDeck ? (
-        <g>
-          <foreignObject x={deck.x} y={deck.y} width={deck.w} height={deck.h} pointerEvents="none">
-            <img
-              key={assetId}
-              className="stage-deck-image"
-              src={url(assetId)}
-              alt=""
-              draggable={false}
-              onLoad={(event) => {
-                const { naturalWidth, naturalHeight } = event.currentTarget;
-                if (naturalWidth && naturalHeight)
-                  setNaturalSize({ id: assetId, ratio: naturalWidth / naturalHeight });
-              }}
-            />
-          </foreignObject>
-          {!playing && (
-            <rect
-              className="deck-hit"
-              aria-label="拖动 PPT 位置"
-              x={picture.x}
-              y={picture.y}
-              width={picture.w}
-              height={picture.h}
-              fill="transparent"
-              onPointerDown={(e) => begin(e, 'deck')}
-            />
-          )}
-        </g>
-      ) : (
-        !bg && (
-          <text
-            fontFamily="Microsoft YaHei, sans-serif"
-            fontSize="64"
-            fontWeight="bold"
-            fill={canvasTitleColor(options.backgroundColor)}
-          >
-            {slide.title.match(/.{1,20}/gu)?.map((line, i) => (
-              <tspan key={i} x="100" y={360 + i * 90}>
-                {line}
-              </tspan>
-            ))}
-          </text>
-        )
-      )}
-      {options.logoAssetId && (
-        <g pointerEvents="none">{image(options.logoAssetId, { x: 55, y: 30, w: 180, h: 75 })}</g>
-      )}
+          !bg && (
+            <text
+              fontFamily="Microsoft YaHei, sans-serif"
+              fontSize="64"
+              fontWeight="bold"
+              fill={canvasTitleColor(options.backgroundColor)}
+            >
+              {slide.title.match(/.{1,20}/gu)?.map((line, i) => (
+                <tspan key={i} x="100" y={360 + i * 90}>
+                  {line}
+                </tspan>
+              ))}
+            </text>
+          )
+        )}
+        {options.logoAssetId && (
+          <g pointerEvents="none">{image(options.logoAssetId, { x: 55, y: 30, w: 180, h: 75 })}</g>
+        )}
+      </g>
       {options.layout !== 'slides' && !slide.keepBackgroundAudio && (
         <g className="movable-person" onPointerDown={(e) => begin(e, 'person')} aria-label="拖动讲师位置">
-          <g opacity={1 - actionOpacity}>
+          <g opacity={(join && timeMs >= join.startMs) || activeAction ? 0 : 1}>
             {presenterId ? (
               presenter(presenterId, presenterTime / 1000, !usesPhoto)
             ) : !usesPhoto && idle ? (
@@ -340,14 +344,34 @@ export function LayoutStage({
               </g>
             )}
           </g>
-          {action && !presenterId && !usesPhoto && (
-            <g opacity={actionOpacity}>
-              {presenter(
-                action.assetId,
-                ((presenterTime - action.startMs) * action.sourceMs) / Math.max(1, action.durationMs) / 1000,
-                true,
-              )}
+          {join && (
+            <g opacity={timeMs >= join.startMs ? 1 : 0} pointerEvents="none">
+              <PresenterVideo
+                box={person}
+                src={join.src}
+                info={idle?.info}
+                time={Math.max(0, timeMs - join.startMs) / 1000}
+                playing={playing && timeMs >= join.startMs}
+              />
             </g>
+          )}
+          {[activeAction, upcoming].map(
+            (clip) =>
+              clip && (
+                <g
+                  key={clip.assetId + ':' + clip.startMs}
+                  visibility={clip === activeAction ? 'visible' : 'hidden'}
+                >
+                  {presenter(
+                    clip.assetId,
+                    ((clip.inMs ?? 0) +
+                      (Math.max(0, presenterTime - clip.startMs) * clip.sourceMs) / clip.durationMs) /
+                      1000,
+                    true,
+                    playing && clip === activeAction,
+                  )}
+                </g>
+              ),
           )}
           <rect
             className="person-hit"
@@ -364,18 +388,7 @@ export function LayoutStage({
       {options.burnSubtitles && caption && (
         <CaptionLayer text={caption} size={options.subtitleSize} bottom={margin} />
       )}
-      <rect x="1606" y="24" width="290" height="48" fill="#102934bb" pointerEvents="none" />
-      <text
-        x="1618"
-        y="56"
-        fontFamily="Microsoft YaHei, sans-serif"
-        fontSize="22"
-        fill="white"
-        pointerEvents="none"
-      >
-        AI 生成合成 · 数字人
-      </text>
-      {showDeck && !playing && visibleRight > visibleLeft && visibleBottom > visibleTop && (
+      {showDeck && !playing && !passive && visibleRight > visibleLeft && visibleBottom > visibleTop && (
         <g className={'deck-controls' + (selectedDeck === slide.id ? ' selected' : '')}>
           <rect className="deck-outline" x={picture.x} y={picture.y} width={picture.w} height={picture.h} />
           {corners.map((corner) => {

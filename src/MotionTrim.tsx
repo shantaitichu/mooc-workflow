@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type PointerEvent } from 'react';
 import { Scissors, Film, Repeat2, ScanLine, ZoomIn, ZoomOut, RefreshCw } from 'lucide-react';
 import type { Asset, MotionCut } from '../shared/types';
-import { motionCutSpec, snapMs } from '../shared/motion-track';
+import { snapMs } from '../shared/motion-track';
 import { api } from './api';
 import { OpenMediaLocation } from './OpenMediaLocation';
 
-function FrameInput({
+export function FrameInput({
   label,
   value,
   min,
@@ -24,7 +24,7 @@ function FrameInput({
     const parsed = Number(draft);
     const t =
       draft.trim() && Number.isFinite(parsed) ? Math.max(min, Math.min(max, snapMs(parsed * 1000))) : value;
-    setDraft(String(t / 1000));
+    setDraft(String(value / 1000));
     if (t !== value) onCommit(t);
   }
   return (
@@ -139,13 +139,6 @@ export function MotionTrim({
     right: number;
   } | null>(null);
   const length = end - start;
-  let spec: ReturnType<typeof motionCutSpec> | undefined,
-    rangeProblem = '';
-  try {
-    spec = motionCutSpec(length);
-  } catch (e) {
-    rangeProblem = e instanceof Error ? e.message : String(e);
-  }
   function seek(ms: number) {
     const clamped = Math.max(0, Math.min(ms, total));
     if (video.current && video.current.readyState >= 1) video.current.currentTime = clamped / 1000;
@@ -274,7 +267,7 @@ export function MotionTrim({
     });
   }
   function commit() {
-    if (!spec || busy) return;
+    if (length < 40 || busy) return;
     const title = name.trim() || '动作 ' + timecode(start);
     stop();
     setError('');
@@ -337,10 +330,9 @@ export function MotionTrim({
               选段时长 <b>{(length / 1000).toFixed(2)} 秒</b>
             </span>
           </div>
-          <button className="button primary cut-submit" disabled={!!busy || !spec} onClick={commit}>
+          <button className="button primary cut-submit" disabled={!!busy || length < 40} onClick={commit}>
             <Scissors size={16} /> 保存选段
           </button>
-          {rangeProblem && <small role="status">{rangeProblem}</small>}
         </aside>
       </div>
       <section className="cut-timeline" aria-label="动作选段时间线">

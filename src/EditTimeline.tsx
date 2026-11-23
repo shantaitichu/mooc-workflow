@@ -17,6 +17,7 @@ import {
 import { allowsActions, moveSentence, pageAt, reorderPage, type TimelinePage } from '../shared/edit-timeline';
 import { readyMotion } from '../shared/domain';
 import { snapMs } from '../shared/motion-track';
+import { FrameInput } from './MotionTrim';
 import type { Course } from '../shared/types';
 import { api } from './api';
 import type { EditTransport } from './useEditTransport';
@@ -92,13 +93,16 @@ export function EditTimeline({
       return;
     }
     const key = cueId ?? crypto.randomUUID();
+    const oldCue = course.slides.find((s) => s.id === originalPage)?.motionTrack?.find((c) => c.id === cueId);
+    const anchorMs = oldCue ? oldCue.anchorMs : (lib.find((m) => m.id === id)?.anchorMs ?? 0);
     update((c) => {
       const src = c.slides.find((s) => s.id === originalPage),
         target = c.slides.find((s) => s.id === dest.id)!;
       if (src) src.motionTrack = src.motionTrack?.filter((i) => i.id !== key);
-      target.motionTrack = [...(target.motionTrack ?? []), { id: key, motionId: id, startMs: at }].sort(
-        (a, b) => a.startMs - b.startMs,
-      );
+      target.motionTrack = [
+        ...(target.motionTrack ?? []),
+        { id: key, motionId: id, startMs: at, anchorMs },
+      ].sort((a, b) => a.startMs - b.startMs);
     });
     setPicked(key);
     setNotice('');
@@ -288,20 +292,18 @@ export function EditTimeline({
                 const track = [...(course.slides.find((s) => s.id === page.id)?.motionTrack ?? [])].sort(
                   (a, b) => a.startMs - b.startMs,
                 );
-                return track.map((cue, i) => {
-                  const m = course.speaker.motions.find((m) => m.id === cue.motionId),
-                    len = course.assets.find((a) => a.id === m?.assetId)?.info.durationMs ?? 40;
-                  const at = page.start + cue.startMs,
-                    to = Math.min(at + len, page.voiceEnd, page.start + (track[i + 1]?.startMs ?? Infinity));
-                  const invalid = to <= at,
+                return track.map((cue) => {
+                  const m = course.speaker.motions.find((m) => m.id === cue.motionId);
+                  const at = page.start + cue.startMs;
+                  const invalid = at >= page.voiceEnd,
                     display = invalid ? Math.max(page.start, page.end - 40) : at;
                   return (
                     <button
                       key={cue.id}
                       draggable
                       className={'motion-event ' + (picked === cue.id ? 'chosen' : '')}
-                      style={rect(display, invalid ? page.end : to)}
-                      title={(m?.name ?? '缺失动作') + (invalid ? ' · 起点超出页长' : '')}
+                      style={{ left: percent(display - origin) }}
+                      title={(m?.name ?? '缺失动作') + ' · ' + timecode(at) + (invalid ? ' · 超出口播' : '')}
                       onClick={(e) => {
                         e.stopPropagation();
                         setPicked(cue.id);
@@ -316,7 +318,7 @@ export function EditTimeline({
                         })
                       }
                     >
-                      {m?.name ?? '缺失动作'}
+                      <span>{m?.name ?? '缺失动作'}</span>
                     </button>
                   );
                 });
@@ -336,7 +338,7 @@ export function EditTimeline({
             <small>
               {lib.length
                 ? '拖到人物动作轨，或点击插入播放头位置'
-                : '在「动作素材」中截取并生成动作后，即可在这里编排。'}
+                : '在「动作素材」中把选段加入动作库，即可拖入此轨。'}
             </small>
           </div>
           <div className="motion-palette">
@@ -359,25 +361,23 @@ export function EditTimeline({
           </div>
         </section>
         {selected && (
-          <div className="track-tools">
-            <label>
-              动作起点（秒）
-              <input
-                aria-label="动作起点（秒）"
-                type="number"
-                step=".04"
-                min="0"
-                value={selected.startMs / 1000}
-                onChange={(e) =>
-                  place(
-                    selected.motionId,
-                    p.start + Math.max(0, Math.min(p.end - p.start - 1, +e.target.value * 1000)),
-                    p.id,
-                    selected.id,
-                  )
-                }
-              />
-            </label>
+          <div className="track-tools" key={selected.id}>
+            <strong>{course.speaker.motions.find((m) => m.id === selected.motionId)?.name}</strong>
+            <FrameInput
+              label="页内动作时刻（秒）"
+              value={selected.startMs}
+              min={0}
+              max={Math.max(0, (Math.ceil((p.voiceEnd - p.start) / 40) - 1) * 40)}
+              onCommit={(ms) => place(selected.motionId, p.start + ms, p.id, selected.id)}
+            />
+            <FrameInput
+              label="全课动作时刻（秒）"
+              value={p.start + selected.startMs}
+              min={0}
+              max={Math.max(0, pages.at(-1)!.voiceEnd - 1)}
+              onCommit={(ms) => place(selected.motionId, ms, p.id, selected.id)}
+            />
+            <small>素材关键帧 {((selected.anchorMs ?? 0) / 1000).toFixed(2)} 秒</small>
             <button
               onClick={() => {
                 t.stop();

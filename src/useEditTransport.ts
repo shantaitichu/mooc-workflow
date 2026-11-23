@@ -38,6 +38,7 @@ export function useEditTransport(
   selectedId: string,
   select: (id: string) => void,
   enabled: boolean,
+  preparePage?: (id: string) => Promise<void> | undefined,
 ) {
   const total = pages.at(-1)?.end ?? 0;
   const spans = useMemo(() => audioSpans(pages), [pages]);
@@ -106,7 +107,7 @@ export function useEditTransport(
       media = undefined;
       sound.current = null;
     }
-    function start(at: number) {
+    async function start(at: number) {
       clear();
       if (disposed) return;
       show(at);
@@ -117,6 +118,17 @@ export function useEditTransport(
       }
       const span = spans[index],
         end = Math.min(span.end, limit);
+      const page = pageAt(pages, at);
+      try {
+        if (page && preparePage) await preparePage(page.id);
+      } catch (e) {
+        if (!disposed) {
+          setError('本地换页预览失败 · ' + String(e));
+          setRange(null);
+        }
+        return;
+      }
+      if (disposed) return;
       if (!span.assetId) {
         const origin = performance.now();
         timer = setInterval(() => {
@@ -173,7 +185,7 @@ export function useEditTransport(
       clear();
       release(prepared);
     };
-  }, [enabled, range, spans, courseId, total, show]);
+  }, [enabled, range, spans, courseId, total, show, pages, preparePage]);
   function play(from = position.current, to = total) {
     if (!enabled || !total) return;
     show(from >= to ? 0 : from);

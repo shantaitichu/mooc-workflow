@@ -55,6 +55,7 @@ function previewAPI(): DesktopAPI {
   const write = (state: WorkspaceState) => localStorage.setItem('mooc-preview', JSON.stringify(state));
   return {
     state: async () => read(),
+    preparePageJoin: async () => null,
     previewColor: unsupported,
     createCourse: async (title) => {
       const s = read();
@@ -101,6 +102,7 @@ function previewAPI(): DesktopAPI {
     prepareActorVideo: unsupported,
     cutPortrait: unsupported,
     createMotionFromCut: unsupported,
+    addLocalMotion: unsupported,
     suggestMotionCuts: unsupported,
     splitMotion: unsupported,
     cloneVoice: unsupported,

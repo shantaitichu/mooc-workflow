@@ -191,7 +191,7 @@ export function segmentFingerprint(
 export function slideFingerprint(course: Course, slide: Slide, stage: Stage = 'composition'): string {
   if (stage === 'video')
     return fingerprint({
-      pageVideo: 4,
+      pageVideo: slide.motionTrack?.length || slide.motionId ? 5 : 4,
       idle: assetHash(course, course.speaker.idleAssetId),
       track: slide.motionTrack?.length
         ? [...slide.motionTrack]
@@ -199,6 +199,7 @@ export function slideFingerprint(course: Course, slide: Slide, stage: Stage = 'c
             .map((c) => [
               c.startMs,
               assetHash(course, course.speaker.motions.find((m) => m.id === c.motionId)?.assetId),
+              ...(c.anchorMs === undefined ? [] : [c.anchorMs]),
             ])
         : undefined,
       segments: segmentsFor(slide).map((s) => segmentFingerprint(course, slide, s, 'video')),
@@ -247,11 +248,11 @@ export function currentArtifact(course: Course, slide: Slide, stage: Stage, segm
 export function slideStatus(
   course: Course,
   slide: Slide,
-): 'empty' | 'ready' | 'review' | 'approved' | 'stale' {
+): 'empty' | 'ready' | 'generated' | 'stale' {
   if (!plainSpeech(slide.spokenText) && !slide.recordedAudioId && !slide.keepBackgroundAudio) return 'empty';
   const artifact = currentArtifact(course, slide, 'composition');
-  if (artifact) return slide.reviewedFingerprint === artifact.fingerprint ? 'approved' : 'review';
-  return course.artifacts.some((a) => a.slideId === slide.id) ? 'stale' : 'ready';
+  if (artifact) return 'generated';
+  return course.artifacts.some((a) => a.slideId === slide.id && a.stage === 'composition') ? 'stale' : 'ready';
 }
 export function estimatedDuration(text: string, settings: SpeechSettings): number {
   const tokens = plainSpeech(text).match(/[\u3400-\u9fff]|[A-Za-z0-9]+/g)?.length ?? 0;
@@ -263,7 +264,7 @@ export function estimatedDuration(text: string, settings: SpeechSettings): numbe
       (text.match(/\n/g)?.length ?? 0) * settings.paragraphPauseMs,
   );
 }
-export function validateCourse(course: Course): string[] {
+export function validateCourse(course: Course, audioOnly = false): string[] {
   const issues: string[] = [];
   if (!course.slides.length) issues.push('请先导入课件或添加页面。');
   if (new Set(course.slides.map((s) => s.id)).size !== course.slides.length) issues.push('页面标识重复。');
@@ -280,6 +281,7 @@ export function validateCourse(course: Course): string[] {
       issues.push(`第 ${i + 1} 页有超过 500 字的长句，请在语义边界分段。`);
     for (const match of slide.spokenText.matchAll(/\[停顿\s*(\d+)\s*ms\]/g))
       if (+match[1] > 10000 || +match[1] < 50) issues.push(`第 ${i + 1} 页停顿须为 50–10000ms。`);
+    if (audioOnly) return;
     if (slide.motionTrack?.length) {
       if (slide.videoModel === 'omnihuman-1.5' || slide.motionId)
         issues.push('动作时间线需要使用整页口型驱动路线。');
@@ -339,7 +341,7 @@ export const matteModel = 'mediakit-matte-portrait-video';
 export function readyMotion(course: Course, m: Course['speaker']['motions'][number]) {
   const idle = course.assets.find((a) => a.id === course.speaker.idleAssetId);
   return (
-    !!idle && m.idleHash === idle.sha256 && !!course.assets.find((a) => a.id === m.assetId)?.info.transparent
+    (m.origin === 'local' || (!!idle && m.idleHash === idle.sha256)) && !!course.assets.find((a) => a.id === m.assetId)?.info.transparent
   );
 }
 export const portraitModel = 'mediakit-remove-image-background';

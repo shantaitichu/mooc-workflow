@@ -1,4 +1,4 @@
-import type { Course, Slide } from './types';
+import type { Course, Slide, ProductionMode } from './types';
 import {
   compositionFor,
   currentArtifact,
@@ -10,7 +10,7 @@ import {
   toSSML,
 } from './domain';
 
-export function estimateProduction(course: Course, slides: Slide[]) {
+export function estimateProduction(course: Course, slides: Slide[], mode: ProductionMode = 'full') {
   let audioMicros = 0,
     videoMicros = 0,
     reusedAudio = 0,
@@ -18,7 +18,7 @@ export function estimateProduction(course: Course, slides: Slide[]) {
     reusedPages = 0,
     cloudJobs = 0;
   for (const slide of slides) {
-    if (currentArtifact(course, slide, 'composition')) {
+    if (mode !== 'audio' && currentArtifact(course, slide, 'composition')) {
       reusedPages++;
       continue;
     }
@@ -27,7 +27,12 @@ export function estimateProduction(course: Course, slides: Slide[]) {
     for (const segment of segmentsFor(slide)) {
       const audio = currentArtifact(course, slide, 'audio', segment);
       if (audio) reusedAudio++;
-      else if (!slide.recordedAudioId && !slide.keepBackgroundAudio) {
+      else if (
+        mode !== 'video' &&
+        !currentArtifact(course, slide, 'audio') &&
+        !slide.recordedAudioId &&
+        !slide.keepBackgroundAudio
+      ) {
         let ssml: string;
         try {
           ssml = toSSML(segment.text, speech);
@@ -44,7 +49,8 @@ export function estimateProduction(course: Course, slides: Slide[]) {
         course.assets.find((a) => a.id === slide.recordedAudioId)?.info.durationMs ??
         estimatedDuration(segment.text, speech);
     }
-    if (compositionFor(course, slide).layout !== 'slides' && !slide.keepBackgroundAudio) {
+    pageMs = currentArtifact(course, slide, 'audio')?.durationMs ?? pageMs;
+    if (mode !== 'audio' && compositionFor(course, slide).layout !== 'slides' && !slide.keepBackgroundAudio) {
       if (currentArtifact(course, slide, 'video')) reusedVideo++;
       else {
         const durationMs = Math.max(1, pageMs);

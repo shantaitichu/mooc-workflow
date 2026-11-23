@@ -3,6 +3,7 @@ import type { DesktopAPI } from '../shared/types';
 const call = (method: string, ...args: unknown[]) => ipcRenderer.invoke(`mooc:${method}`, ...args);
 const api: DesktopAPI = {
   state: () => call('state'),
+  preparePageJoin: (id, slide, next, key) => call('preparePageJoin', id, slide, next, key),
   previewColor: (x, y) => call('previewColor', x, y),
   createCourse: (title) => call('createCourse', title),
   saveCourse: (course) => call('saveCourse', course),
@@ -30,6 +31,7 @@ const api: DesktopAPI = {
   prepareActorVideo: (id, asset, role, motionId) => call('prepareActorVideo', id, asset, role, motionId),
   cutPortrait: (id, asset) => call('cutPortrait', id, asset),
   createMotionFromCut: (id, cut, budget) => call('createMotionFromCut', id, cut, budget),
+  addLocalMotion: (id, item, kind) => call('addLocalMotion', id, item, kind),
   suggestMotionCuts: (id) => call('suggestMotionCuts', id),
   splitMotion: (id, cut) => call('splitMotion', id, cut),
   previewVoice: (id) => call('previewVoice', id),

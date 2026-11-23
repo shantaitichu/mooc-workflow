@@ -30,7 +30,13 @@ export function ProductionHistory({
   const page = batch?.pages.find((p) => p.slide.id === order?.id);
   const pricingSlide =
     selected && page && order ? repairSlide(page, order.operation, Date.now(), order.recordingId) : selected;
-  const estimate = pricingSlide && estimateProduction(source, [pricingSlide]);
+  const estimate =
+    pricingSlide &&
+    estimateProduction(
+      source,
+      [pricingSlide],
+      order?.operation === 'resume' ? batch?.mode : order?.operation,
+    );
   const estimateMicros = order?.operation === 'audio' ? estimate?.audioMicros : estimate?.totalMicros;
   const operationName = { resume: '继续生成本页', audio: '仅重做配音', video: '重做人物视频并合成' };
 
@@ -46,9 +52,11 @@ export function ProductionHistory({
     const record = existing?.pages.find((p) => p.slide.id === slide.id);
     const context = existing ? batchCourse(course, existing) : source;
     if (existing) setScope(existing.id);
-    const quote = estimateProduction(context, [
-      record ? repairSlide(record, operation, Date.now(), recordingId) : slide,
-    ]);
+    const quote = estimateProduction(
+      context,
+      [record ? repairSlide(record, operation, Date.now(), recordingId) : slide],
+      operation === 'resume' ? existing?.mode : operation,
+    );
     const amount = operation === 'audio' ? quote.audioMicros : quote.totalMicros;
     setLimit(String(Math.ceil(amount / 10000) / 100));
     setOrder({ id: slide.id, operation, recordingId });
@@ -195,7 +203,7 @@ export function ProductionHistory({
               {batch && outputs.presenter && (
                 <button
                   className="button"
-                  disabled={disabled || sending || !outputs.total || outputs.parts.length !== outputs.total}
+                  disabled={disabled || sending || !outputs.audio}
                   onClick={() => prepare(slide, 'video')}
                 >
                   重做人物视频

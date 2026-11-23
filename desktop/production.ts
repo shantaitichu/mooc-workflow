@@ -1,3 +1,7 @@
+import { prepareJoin } from './page-join';
+import { savedCutFile } from './speaker-media';
+import { narrationDurations } from '../shared/edit-timeline';
+import { cleanPageModel, pageJoin } from '../shared/page-join';
 import {
   actorInput,
   actorTrack,
@@ -21,6 +25,7 @@ import type {
   Course,
   Slide,
   ProductionRequest,
+  ProductionMode,
   LocalTask,
   Segment,
   Stage,
@@ -85,9 +90,13 @@ export class Production {
       snapshot.slides = [repairSlide(page, request.operation ?? 'resume', Date.now(), request.recordingId)];
     }
     const selected = snapshot.slides.filter((s) => request.slideIds.includes(s.id));
+    const mode = request.operation === 'audio' ? 'audio' : request.operation === 'video' ? 'video'
+      : request.mode ?? batch?.mode ?? 'full';
     for (const s of selected) {
+      if (mode === 'video' && !currentArtifact(snapshot, s, 'audio'))
+        throw new Error('「' + s.title + '」缺少与当前讲稿匹配的整页配音，请先生成配音。');
       if (
-        request.operation !== 'audio' && compositionFor(snapshot, s).layout !== 'slides' &&
+        mode !== 'audio' && compositionFor(snapshot, s).layout !== 'slides' &&
         !s.keepBackgroundAudio &&
         (s.videoModel ?? 'mediakit-lipsync') === 'mediakit-lipsync'
       ) {
@@ -100,17 +109,12 @@ export class Production {
       }
     }
     if (!selected.length) throw new Error('请选择页面');
-    const issues = validateCourse({ ...snapshot, slides: selected });
+    const issues = validateCourse({ ...snapshot, slides: selected }, mode === 'audio');
     if (issues.length) throw new Error(issues.join('\n'));
-    if (
-      !batch && !request.sample &&
-      !snapshot.slides.some((s) => s.approvedSampleFingerprint === slideFingerprint(snapshot, s))
-    )
-      throw new Error('请先确认一页完整样片，再批量生成。');
     const task: LocalTask = {
       id: randomUUID(),
       courseId: snapshot.id,
-      label: batch ? '批次逐页返修' : request.sample ? '制作样片' : '批量制作',
+      label: mode === 'audio' ? '生成配音' : mode === 'video' ? '按配音生成视频' : batch ? '批次逐页返修' : request.sample ? '制作样片' : '批量制作',
       status: 'running',
       progress: 0,
       message: '准备素材',
@@ -119,7 +123,7 @@ export class Production {
     const batchId = batch?.id ?? task.id;
     this.batchIds.set(snapshot, batchId);
     this.store.mutate(live.id, c => {
-      if (!batch) (c.batches ??= []).push(makeBatch(live, selected, batchId, task.createdAt, task.label));
+      if (!batch) (c.batches ??= []).push({ ...makeBatch(live, selected, batchId, task.createdAt, task.label), mode });
       else {
         const record = c.batches!.find(b => b.id === batchId)!.pages.find(p => p.slide.id === selected[0].id)!;
         record.pending = selected[0];
@@ -130,7 +134,7 @@ export class Production {
     this.active.set(task.id, controller);
     this.store.setTask(task);
     this.change();
-    void this.execute(snapshot, selected, task, request.budgetMicros, controller.signal, request.operation === 'audio').finally(() =>
+    void this.execute(snapshot, selected, task, request.budgetMicros, controller.signal, mode).finally(() =>
       this.active.delete(task.id),
     );
     return task.id;
@@ -141,7 +145,7 @@ export class Production {
     task: LocalTask,
     budget: number,
     signal: AbortSignal,
-    audioOnly: boolean,
+    mode: ProductionMode,
   ) {
     const remaining = { micros: budget };
     const failures: string[] = [];
@@ -156,7 +160,7 @@ export class Production {
       progress(`第 ${index + 1}/${slides.length} 页 · ${slide.title}`);
       try {
         await this.page(course, slide, remaining, signal, (message) =>
-          progress(`${slide.title} · ${message}`), audioOnly,
+          progress(`${slide.title} · ${message}`), mode,
         );
         this.store.mutate(course.id, c => {
           const batch = c.batches!.find(b => b.id === this.batchIds.get(course))!;
@@ -187,12 +191,27 @@ export class Production {
       this.store.setTask(task);
       this.change();
     }
+    if (mode !== 'audio' && !signal.aborted) {
+      const touched = new Set(slides.map(s => s.id));
+      for (const [i,left] of course.slides.entries()) {
+        const right = course.slides[i+1];
+        if (signal.aborted || !right || !(touched.has(left.id) || touched.has(right.id))) continue;
+        const spec = pageJoin(course,left,right);
+        if (!spec) continue;
+        try {
+          progress(`本地处理第 ${i+1} → ${i+2} 页讲师衔接`);
+          await prepareJoin(this.store,course.id,spec,await this.media.ffmpeg());
+        } catch (e) {
+          failures.push(`第 ${i+1} 页换页衔接：${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    }
     task.status = signal.aborted ? 'cancelled' : failures.length ? 'failed' : 'completed';
     task.message = signal.aborted
       ? '已停止，已完成素材可复用。'
       : failures.length
         ? failures.join('\n')
-        : audioOnly ? '本页配音已更新，可试听后继续生成人物视频和成片。' : '已生成，请逐页检查配音、口型、字幕及版式。';
+        : mode === 'audio' ? '配音已就绪，可在动作轨编排后生成视频。' : '已生成，请逐页检查配音、口型、字幕及版式。';
     this.store.setTask(task);
     this.change();
   }
@@ -242,20 +261,30 @@ export class Production {
     remaining: { micros: number },
     signal: AbortSignal,
     progress: (message: string) => void,
-    audioOnly = false,
+    mode: ProductionMode = 'full',
   ) {
     const fp = slideFingerprint(course, slide);
     const dir = path.join(this.store.courseRoot(course.id), 'renders', fp);
     mkdirSync(dir, { recursive: true });
-    if (currentArtifact(course, slide, 'composition')) {
-      progress('复用已有成片');
+    const existingPage = currentArtifact(course, slide, 'composition');
+    const narration = currentArtifact(course, slide, 'audio');
+    if (mode === 'audio' && narration) { progress('复用已有整页配音'); return; }
+    if (mode !== 'audio' && existingPage) {
+      if (existingPage.model === 'ffmpeg-1080p25') {
+        progress('使用原配音与人物素材更新本地合成');
+        const {audio, presenter, cues} = this.media.pageSources(course,slide);
+        const output = path.join(dir,'page.mp4');
+        const info = await this.media.compose(course,slide,audio,presenter,cues,output,signal);
+        this.addArtifact(course,slide,'composition',output,info.durationMs!,cleanPageModel);
+      } else progress('复用已有成片');
       return;
     }
     const segments = segmentsFor(slide);
     const audioFiles: string[] = [];
     const captionParts: CaptionPart[] = [];
     let cursor = 0;
-    for (const segment of segments) {
+    for (const segment of narration ? [] : segments) {
+      if (mode === 'video') throw new Error('现有配音已失效，请先生成配音。');
       if (signal.aborted) throw new Error('已停止');
       let audio = currentArtifact(course, slide, 'audio', segment);
       if (!audio) {
@@ -343,11 +372,16 @@ export class Production {
       captionParts.push({ text: segment.caption, durationMs: audio.durationMs });
       cursor += audio.durationMs;
     }
-    const voiceTrack = path.join(dir, 'narration.wav');
-    await this.media.concatAudio(audioFiles, voiceTrack, 0, signal);
-    if (!currentArtifact(course, slide, 'audio'))
+    const voiceTrack = narration ? this.store.assetPath(course.id, narration.assetId) : path.join(dir, 'narration.wav');
+    if (narration) {
+      cursor = narration.durationMs;
+      const durations = narrationDurations(course, slide, cursor);
+      segments.forEach((s,i) => captionParts.push({text: s.caption, durationMs: durations[i]}));
+    } else {
+      await this.media.concatAudio(audioFiles, voiceTrack, 0, signal);
       this.addArtifact(course, slide, 'audio', voiceTrack, cursor, '整页口播');
-    if (audioOnly) return;
+    }
+    if (mode === 'audio') return;
     const audio = path.join(dir, 'page.wav');
     await this.media.concatAudio([voiceTrack], audio, slide.pagePauseMs, signal);
     let presenter: string | undefined;
@@ -373,7 +407,8 @@ export class Production {
               file: this.store.assetPath(course.id, t.asset.id),
               startMs: t.startMs,
               durationMs: t.durationMs,
-              sourceMs: t.asset.info.durationMs!,
+              sourceMs: t.sourceMs,
+              inMs: t.inMs,
               crop: driverAperture(driverFrame, await this.frame(course.id, t.asset)),
             })),
           );
@@ -387,6 +422,7 @@ export class Production {
                 startMs: at,
                 durationMs: Math.min(len, cursor - at),
                 sourceMs: len,
+                inMs: 0,
                 crop,
               });
               if (!motion.loopable) break;
@@ -464,7 +500,7 @@ export class Production {
     progress('本地合成与编码');
     const output = path.join(dir, 'page.mp4');
     const info = await this.media.compose(course, slide, audio, presenter, finalCues, output, signal);
-    this.addArtifact(course, slide, 'composition', output, info.durationMs!, 'ffmpeg-1080p25');
+    this.addArtifact(course, slide, 'composition', output, info.durationMs!, cleanPageModel);
   }
   async cutPortrait(courseId: string, sourceId: string) {
     const c = this.store.get(courseId);
@@ -642,6 +678,32 @@ export class Production {
     return this.store.addAsset(courseId, out, 'video', { ...info, transparent: true }, displayName);
   }
 
+  async addLocalMotion(courseId: string, id: string, kind: 'cut' | 'video') {
+    const course = this.store.get(courseId);
+    const cut = kind === 'cut' ? course.speaker.savedCuts?.find(c => c.id === id) : undefined;
+    if (kind === 'cut' && !cut) throw new Error('选段已删除，请重新选择。');
+    const source = course.assets.find(a => a.id === (cut?.sourceId ?? id) && a.kind === 'video');
+    if (!source) throw new Error('动作源视频缺失。');
+    const key = fingerprint({ localMotion: source.sha256, start: cut?.startMs, end: cut?.endMs });
+    if (course.speaker.motions.some(m => m.origin === 'local' && m.sourceClip === key)) return course;
+    const ffmpeg = await this.media.ffmpeg();
+    const input = cut ? await savedCutFile(this.store, courseId, id, async () => ffmpeg) : this.store.assetPath(courseId, id);
+    const info = await probe(input, this.store.settings().ffprobePath);
+    if (!info.durationMs || info.durationMs < 40 || info.durationMs > maxPresenterVideoMs) throw new Error('请选择一帧至 5 分钟的动作片段。');
+    const name = (cut?.name ?? path.parse(source.name).name).slice(0, 60);
+    const dir = mkdtempSync(path.join(tmpdir(), 'mooc-library-'));
+    try {
+      const asset = await this.saveTransparentVideo(courseId, input, info.videoCodec, info.durationMs, dir, name + '.webm', ffmpeg);
+      const result = this.store.mutate(courseId, c => {
+        if (c.speaker.id !== course.speaker.id || (cut && !c.speaker.savedCuts?.some(x => x.id === id && x.sourceId === cut.sourceId && x.startMs === cut.startMs && x.endMs === cut.endMs))) throw new Error('讲师或选段已更换，请重试。');
+        if (c.speaker.motions.some(m => m.origin === 'local' && m.sourceClip === key)) return;
+        if (c.speaker.motions.length >= 100) throw new Error('动作库已满。');
+        c.speaker.motions.push({ id: randomUUID(), assetId: asset.id, name, sourceClip: key, cutId: cut?.id, origin: 'local', preset: 'explain', reviewed: true, loopable: false, startPose: '', endPose: '', createdAt: new Date().toISOString() });
+      });
+      this.change();
+      return result;
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
   async importActorVideo(courseId: string, assetId: string, role: 'reference' | 'idle') {
     const course = this.store.get(courseId);
     const source = course.assets.find((a) => a.id === assetId && a.kind === 'video');
@@ -830,6 +892,7 @@ export class Production {
       durationMs: duration,
       inMs: timing ? (timing.leadFrames - handleFrames) * 40 : 0,
       sourceMs: duration + handleFrames * 80,
+      matchIdleEnds: true,
       crop: legacy ? driverAperture(frame, asset.info) : undefined,
     };
     const output = path.join(path.dirname(file), 'joined.webm');
@@ -882,7 +945,7 @@ export class Production {
     if (active?.selectionKey === key) return active.result;
     if (active) throw new Error('本课程有动作正在生成，请等待完成后再提交。');
     const existing = course.speaker.motions.find(
-      (m) => readyMotion(course, m) && (m.sourceClip === key || (savedCut && m.cutId === savedCut.id)),
+      (m) => m.origin !== 'local' && readyMotion(course, m) && (m.sourceClip === key || (savedCut && m.cutId === savedCut.id)),
     );
     if (existing) {
       if (savedCut && existing.cutId !== savedCut.id)

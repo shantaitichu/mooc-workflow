@@ -1,12 +1,16 @@
+import { pageJoin, type PageJoin } from '../shared/page-join';
+import { prepareJoin } from './page-join';
+import { editTimeline } from '../shared/edit-timeline';
 import { actorInput } from './actor-video';
 import { driverAperture, fitPresenter } from '../shared/presenter-frame';
 import { writeCaptionTrack } from './caption-raster';
 import { canvasTitleColor, geometry } from '../shared/layout';
 import path from 'node:path';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, copyFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, copyFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas';
 import type { Course, Slide, MediaInfo, ExportOptions } from '../shared/types';
-import { compositionFor, currentArtifact, slideFingerprint, clockText, stripPauses } from '../shared/domain';
+import { compositionFor, currentArtifact, clockText, stripPauses } from '../shared/domain';
 import { captionStrip, toSrt, type Cue } from '../shared/subtitles';
 import { WorkspaceStore } from './store';
 import { findTool, run } from './process';
@@ -215,7 +219,7 @@ export class MediaEngine {
     output: string,
     signal?: AbortSignal,
     burnOverride?: boolean,
-    fades: string[] = [],
+    join?: { spec: PageJoin; file: string },
   ): Promise<MediaInfo> {
     const options = compositionFor(course, slide);
     const dir = path.dirname(output);
@@ -318,8 +322,19 @@ export class MediaEngine {
         geometry(options).person,
         crop ?? { w: presenter.width, h: presenter.height },
       );
+      let actorStream = `${nextInput++}:v`;
+      if (join) {
+        args.push(...actorInput(join.file, 'vp9'));
+        const speechFrames = Math.round(join.spec.startMs / 40);
+        filters.push(
+          `[${actorStream}]fps=25,format=yuva420p,setsar=1,trim=end_frame=${speechFrames},setpts=PTS-STARTPTS[spoken]`,
+        );
+        filters.push(`[${nextInput++}:v]fps=25,format=yuva420p,setsar=1,setpts=PTS-STARTPTS[bridge]`);
+        filters.push('[spoken][bridge]concat=n=2:v=1:a=0[joined]');
+        actorStream = 'joined';
+      }
       filters.push(
-        `[${nextInput++}:v]${cropFilter}scale=${w}:${h},format=yuva420p,setsar=1,fps=25,tpad=stop_mode=clone:stop_duration=${total}[person]`,
+        `[${actorStream}]${cropFilter}scale=${w}:${h},format=yuva420p,setsar=1,fps=25,tpad=stop_mode=clone:stop_duration=${total}[person]`,
       );
       filters.push(`[${base}][person]overlay=${x}:${y}:eof_action=repeat[withperson]`);
       base = 'withperson';
@@ -333,19 +348,6 @@ export class MediaEngine {
       filters.push(`[${base}][${nextInput++}:v]overlay=0:${y}:eof_action=repeat[subbed]`);
       base = 'subbed';
     }
-    // Render the visible AI label as a local bitmap, avoiding platform-specific font paths in FFmpeg.
-    const mark = createCanvas(290, 48);
-    const mc = mark.getContext('2d');
-    mc.fillStyle = '#102934bb';
-    mc.fillRect(0, 0, 290, 48);
-    mc.fillStyle = '#ffffff';
-    mc.font = '22px "Microsoft YaHei", sans-serif';
-    mc.fillText('AI 生成合成 · 数字人', 12, 32);
-    const watermark = path.join(dir, 'ai-label.png');
-    writeFileSync(watermark, mark.toBuffer('image/png'));
-    args.push('-loop', '1', '-i', watermark);
-    const transition = fades.length ? ',' + fades.join(',') : '';
-    filters.push(`[${base}][${nextInput}:v]overlay=W-w-24:24${transition}[out]`);
     filters.push(`[1:a]apad,atrim=duration=${total},aresample=48000[a]`);
     args.push(
       '-filter_complex_threads',
@@ -353,7 +355,7 @@ export class MediaEngine {
       '-filter_complex',
       filters.join(';'),
       '-map',
-      '[out]',
+      `[${base}]`,
       '-map',
       '[a]',
       '-t',
@@ -385,154 +387,117 @@ export class MediaEngine {
     await run(await this.ffmpeg(), args, { cwd: dir, signal, timeoutMs: 3600000 });
     return probe(output, this.store.settings().ffprobePath);
   }
+  pageSources(course: Course, slide: Slide) {
+    const artifact = currentArtifact(course, slide, 'composition')!;
+    const dir = path.join(this.store.courseRoot(course.id), 'renders', artifact.fingerprint);
+    const audio = path.join(dir, 'page.wav'),
+      cachedPresenter = path.join(dir, 'presenter.webm');
+    const cueFile = path.join(dir, 'cues.json');
+    const video = currentArtifact(course, slide, 'video');
+    return {
+      audio: existsSync(audio) ? audio : this.store.assetPath(course.id, artifact.assetId),
+      presenter: video
+        ? this.store.assetPath(course.id, video.assetId)
+        : existsSync(cachedPresenter)
+          ? cachedPresenter
+          : undefined,
+      cues: existsSync(cueFile)
+        ? (JSON.parse(readFileSync(cueFile, 'utf8')) as Cue[])
+        : editTimeline({ ...course, slides: [slide] })[0].captions,
+    };
+  }
   async export(course: Course, destination: string, options: ExportOptions, signal?: AbortSignal) {
     if (!course.slides.length) throw new Error('没有可导出的页面');
     const missing = course.slides.filter((s) => !currentArtifact(course, s, 'composition'));
     if (missing.length) throw new Error(`${missing.length} 页尚未生成或需要更新，请先完成。`);
-    if (
-      !options.allowUnreviewed &&
-      course.slides.some((s) => s.reviewedFingerprint !== slideFingerprint(course, s))
-    )
-      throw new Error('正式导出前请逐页完成审核。');
     mkdirSync(destination, { recursive: true });
     const videos: string[] = [];
     const allCues: Cue[] = [];
     const chapters: string[] = [];
-    let cursor = 0;
-    for (const [index, slide] of course.slides.entries()) {
-      const artifact = currentArtifact(course, slide, 'composition')!;
-      let file = this.store.assetPath(course.id, artifact.assetId);
-      const renderDir = path.join(this.store.courseRoot(course.id), 'renders', artifact.fingerprint);
-      const cuePath = path.join(renderDir, 'cues.json');
-      const cues: Cue[] = existsSync(cuePath) ? JSON.parse(readFileSync(cuePath, 'utf8')) : [];
-      const audio = path.join(renderDir, 'page.wav');
-      const presenter = path.join(renderDir, 'presenter.webm');
-      const halfFade = Math.min((course.transitionMs ?? 240) / 2000, artifact.durationMs / 2000);
-      const transition = course.slides.length > 1 && halfFade > 0;
-      if (
-        options.subtitles !== compositionFor(course, slide).burnSubtitles &&
-        (!transition || options.perSlide)
-      ) {
-        file = path.join(renderDir, options.subtitles ? 'export-subtitles.mp4' : 'export-clean.mp4');
-        await this.compose(
-          course,
-          slide,
-          audio,
-          existsSync(presenter) ? presenter : undefined,
-          cues,
-          file,
-          signal,
-          options.subtitles,
-        );
-      }
-      if (transition) {
-        const filtered = path.join(renderDir, 'transition-' + index + '.mp4');
-        const fades: string[] = [];
-        if (index > 0) fades.push('fade=t=in:st=0:d=' + halfFade);
-        if (index < course.slides.length - 1)
-          fades.push(
-            'fade=t=out:st=' + Math.max(0, artifact.durationMs / 1000 - halfFade - 0.04) + ':d=' + halfFade,
-          );
-        const sourcePresenter = existsSync(presenter) ? presenter : undefined;
-        if (
-          existsSync(audio) &&
-          (sourcePresenter || compositionFor(course, slide).layout === 'slides' || slide.keepBackgroundAudio)
-        ) {
+    const joins = course.slides.map((s, i) => pageJoin(course, s, course.slides[i + 1]));
+    const scratch = mkdtempSync(path.join(destination, '.render-'));
+    try {
+      let cursor = 0;
+      for (const [index, slide] of course.slides.entries()) {
+        const artifact = currentArtifact(course, slide, 'composition')!;
+        let file = this.store.assetPath(course.id, artifact.assetId);
+        const { audio, presenter, cues } = this.pageSources(course, slide);
+        const outgoing = joins[index];
+        const settings = compositionFor(course, slide);
+        if (outgoing || options.subtitles !== settings.burnSubtitles || artifact.model === 'ffmpeg-1080p25') {
+          const join = outgoing && {
+            spec: outgoing,
+            file: await prepareJoin(this.store, course.id, outgoing, await this.ffmpeg()),
+          };
+          // Export and generation may run concurrently. Keep caption rasters and FFmpeg inputs separate.
+          const tempDir = mkdtempSync(path.join(scratch, 'page-'));
+          const rendered = path.join(tempDir, 'page.mp4');
           await this.compose(
             course,
             slide,
             audio,
-            sourcePresenter,
+            presenter,
             cues,
-            filtered,
+            rendered,
             signal,
             options.subtitles,
-            fades,
+            join,
           );
-        } else {
-          // Historical portable projects may only contain the already rendered page.
-          if (options.subtitles !== compositionFor(course, slide).burnSubtitles)
-            throw new Error('该页缺少原始渲染缓存，请先重新合成本页以更改字幕。');
-          await run(
-            await this.ffmpeg(),
-            [
-              '-y',
-              '-v',
-              'error',
-              '-i',
-              file,
-              '-vf',
-              fades.join(','),
-              '-map',
-              '0:v:0',
-              '-map',
-              '0:a:0',
-              '-c:v',
-              'libx264',
-              '-crf',
-              '0',
-              '-preset',
-              'veryfast',
-              '-pix_fmt',
-              'yuv420p',
-              '-c:a',
-              'copy',
-              filtered,
-            ],
-            { signal, timeoutMs: 3600000 },
-          );
+          file = rendered;
         }
-        videos.push(filtered);
-      } else videos.push(file);
-      allCues.push(...cues.map((c) => ({ ...c, startMs: c.startMs + cursor, endMs: c.endMs + cursor })));
-      chapters.push(`${clockText(cursor)}\t${index + 1}\t${slide.title}`);
-      cursor += artifact.durationMs;
-      if (options.perSlide) {
-        const target = path.join(destination, 'pages');
-        mkdirSync(target, { recursive: true });
-        copyFileSync(file, path.join(target, `${String(index + 1).padStart(3, '0')}.mp4`));
+        videos.push(file);
+        allCues.push(...cues.map((c) => ({ ...c, startMs: c.startMs + cursor, endMs: c.endMs + cursor })));
+        chapters.push(`${clockText(cursor)}\t${index + 1}\t${slide.title}`);
+        cursor += artifact.durationMs;
+        if (options.perSlide) {
+          const target = path.join(destination, 'pages');
+          mkdirSync(target, { recursive: true });
+          copyFileSync(file, path.join(target, `${String(index + 1).padStart(3, '0')}.mp4`));
+        }
       }
-    }
-    const output = path.join(destination, 'course.mp4');
-    await this.concatVideo(videos, output, signal);
-    writeFileSync(path.join(destination, 'subtitles.srt'), toSrt(allCues), 'utf8');
-    writeFileSync(path.join(destination, 'chapters.tsv'), chapters.join('\n'), 'utf8');
-    writeFileSync(
-      path.join(destination, 'provenance.json'),
-      JSON.stringify(
-        {
-          courseId: course.id,
-          revision: course.revision,
-          exportedAt: new Date().toISOString(),
-          generated: true,
-          subtitleTiming: 'segment-bounded; intra-segment text-proportional; requires review',
-          artifacts: course.artifacts,
-        },
-        null,
-        2,
-      ),
-    );
-    if (options.audio)
-      await run(
-        await this.ffmpeg(),
-        [
-          '-y',
-          '-v',
-          'error',
-          '-i',
-          output,
-          '-vn',
-          '-ar',
-          '48000',
-          '-ac',
-          '1',
-          '-c:a',
-          'pcm_s16le',
-          path.join(destination, 'narration.wav'),
-        ],
-        { signal, timeoutMs: 3600000 },
+      const output = path.join(destination, 'course.mp4');
+      await this.concatVideo(videos, output, signal);
+      writeFileSync(path.join(destination, 'subtitles.srt'), toSrt(allCues), 'utf8');
+      writeFileSync(path.join(destination, 'chapters.tsv'), chapters.join('\n'), 'utf8');
+      writeFileSync(
+        path.join(destination, 'provenance.json'),
+        JSON.stringify(
+          {
+            courseId: course.id,
+            revision: course.revision,
+            exportedAt: new Date().toISOString(),
+            generated: true,
+            subtitleTiming: 'segment-bounded; intra-segment text-proportional; requires review',
+            artifacts: course.artifacts,
+          },
+          null,
+          2,
+        ),
       );
-    if (options.project) this.store.exportArchive(course.id, path.join(destination, 'project.mooc'));
-    return output;
+      if (options.audio)
+        await run(
+          await this.ffmpeg(),
+          [
+            '-y',
+            '-v',
+            'error',
+            '-i',
+            output,
+            '-vn',
+            '-ar',
+            '48000',
+            '-ac',
+            '1',
+            '-c:a',
+            'pcm_s16le',
+            path.join(destination, 'narration.wav'),
+          ],
+          { signal, timeoutMs: 3600000 },
+        );
+      if (options.project) this.store.exportArchive(course.id, path.join(destination, 'project.mooc'));
+      return output;
+    } finally {
+      await rm(scratch, { recursive: true, force: true, maxRetries: 3 });
+    }
   }
 }

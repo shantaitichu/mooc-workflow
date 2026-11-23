@@ -62,6 +62,7 @@ import type {
   Wallet as WalletType,
   LedgerEntry,
   ExportOptions,
+  ProductionMode,
 } from '../shared/types';
 import {
   compositionFor,
@@ -74,7 +75,6 @@ import {
   newSlide,
   priceMicros,
   segmentsFor,
-  slideFingerprint,
   slideStatus,
   speechFor,
   stripPauses,
@@ -96,8 +96,7 @@ import { OpenMediaLocation } from './OpenMediaLocation';
 const statusLabels = {
   empty: '待补讲稿',
   ready: '待生成',
-  review: '待审核',
-  approved: '已通过',
+  generated: '已生成',
   stale: '需要更新',
 };
 type View = 'editor' | 'speaker' | 'motions' | 'tasks' | 'billing' | 'settings';
@@ -191,6 +190,7 @@ export default function App() {
   const [dialog, setDialog] = useState<'create' | 'generate' | 'retake' | 'export' | 'help' | null>(null);
   const [newTitle, setNewTitle] = useState('');
   const [sampleId, setSampleId] = useState<string>();
+  const [generationMode, setGenerationMode] = useState<ProductionMode>('full');
   const [budget, setBudget] = useState(30);
   const [exportOptions, setExportOptions] = useState<ExportOptions>({
     subtitles: true,
@@ -377,10 +377,12 @@ export default function App() {
     ...course, slides: course.slides.map(s => s.id === sampleId ? { ...s, videoTake: (s.videoTake ?? 0) + 1 } : s),
   } : course;
   const productionPages = sample ? productionCourse?.slides.filter((s) => s.id === sampleId) : productionCourse?.slides;
+  const mode = dialog === 'retake' ? 'full' : generationMode;
+  const missingVoice = mode === 'video' && productionCourse && productionPages?.find(s => !currentArtifact(productionCourse, s, 'audio'));
   const estimate =
     productionCourse && productionPages && (dialog === 'generate' || dialog === 'retake')
-      ? estimateProduction(productionCourse, productionPages) : undefined;
-  const passed = course?.slides.filter((s) => slideStatus(course, s) === 'approved').length ?? 0;
+      ? estimateProduction(productionCourse, productionPages, mode) : undefined;
+  const generatedPages = course?.slides.filter((s) => slideStatus(course, s) === 'generated').length ?? 0;
   const artifact = course && slide ? currentArtifact(course, slide, 'composition') : undefined;
   const options = course && slide ? compositionFor(course, slide) : undefined;
   const voiceId = course?.speaker.voiceIds[course.speech.model];
@@ -507,7 +509,7 @@ export default function App() {
                 <h1>{course?.title ?? '开始制作你的第一门课程'}</h1>
                 <p>
                   {course
-                    ? `${course.slides.length} 个页面　·　预计 ${clockText(duration)}　·　${passed} 页已审核`
+                    ? `${course.slides.length} 个页面　·　预计 ${clockText(duration)}　·　${generatedPages} 页已生成`
                     : '把讲稿、课件和讲师素材，变成一堂有温度的课。'}
                 </p>
               </div>
@@ -546,11 +548,9 @@ export default function App() {
                 <span className="step-number">2</span>编辑与配音
               </span>
               <ChevronRight />
-              <span>3　确认样片</span>
+              <span>3　生成视频</span>
               <ChevronRight />
-              <span>4　批量生成</span>
-              <ChevronRight />
-              <span>5　审核与导出</span>
+              <span>4　导出课程</span>
               <button onClick={() => setDialog('help')}>
                 了解制作流程
                 <ArrowRight size={13} />
@@ -829,6 +829,9 @@ export default function App() {
                             <Volume2 size={16} />
                             本页口播
                           </strong>
+                          <button className="text-button" disabled={!!busy} onClick={() => {
+                            setSampleId(slide.id); setGenerationMode('audio'); setDialog('generate');
+                          }}>仅生成本页配音</button>
                           <button
                             className="text-button"
                             onClick={() =>
@@ -880,38 +883,32 @@ export default function App() {
                             <p>填写讲稿后，生成可试听的口播音频</p>
                           </div>
                         )}
+                        {currentArtifact(course, slide, 'audio') && <audio aria-label="整页配音试听" controls preload="metadata" src={api.mediaUrl(course.id, currentArtifact(course, slide, 'audio')!.assetId)} />}
                         <p className="subtle-note">
                           修改讲稿只更新受影响片段。音频确认后，再对齐人物口型与字幕。
                         </p>
                       </section>
                       <div className="preview-footer">
-                        <Button
-                          disabled={!artifact}
-                          onClick={() =>
-                            updateSlide((s) => {
-                              s.reviewedFingerprint = slideFingerprint(course, s);
-                              s.approvedSampleFingerprint = slideFingerprint(course, s);
-                            })
-                          }
-                        >
-                          <CheckCircle2 size={16} />
-                          {slideStatus(course, slide) === 'approved' ? '已通过审核' : '确认本页样片'}
-                        </Button>
                         <div>
                           <Button
                             disabled={!!busy}
                             onClick={() => {
                               setSampleId(undefined);
+                              setGenerationMode('full');
                               setDialog('generate');
                             }}
                           >
                             批量生成
                           </Button>
+                          <Button disabled={!!busy} onClick={() => {
+                            setSampleId(slide.id); setGenerationMode('video'); setDialog('generate');
+                          }}>按配音生成视频</Button>
                           <Button
                             primary
                             disabled={!!busy}
                             onClick={() => {
                               setSampleId(slide.id);
+                              setGenerationMode('full');
                               setDialog('generate');
                             }}
                           >
@@ -1112,7 +1109,7 @@ export default function App() {
                           )}
                           <div className="inspector-tip">
                             <WandSparkles size={17} />
-                            <p>先试听一页样片，确认音色与节奏后再批量生成，可减少返工费用。</p>
+                            <p>可试听单页配音，检查音色与节奏。</p>
                           </div>
                         </div>
                       ) : tab === 'layout' ? (
@@ -1236,20 +1233,6 @@ export default function App() {
                             />
                             显示字幕
                           </label>
-                          <Field label="整课页间淡出淡入（毫秒，0 为直接切换）">
-                            <input
-                              type="number"
-                              min={0}
-                              max={2000}
-                              step={40}
-                              value={course.transitionMs ?? 240}
-                              onChange={(e) =>
-                                update((c) => {
-                                  c.transitionMs = Math.max(0, Math.min(2000, Math.round(+e.target.value)));
-                                })
-                              }
-                            />
-                          </Field>
                           <Field label="数字人生成路线">
                             <select
                               value={slide.videoModel ?? 'mediakit-lipsync'}
@@ -2349,7 +2332,11 @@ export default function App() {
         </Modal>
       )}
       {(dialog === 'generate' || dialog === 'retake') && productionCourse && productionPages && estimate && (
-        <Modal title={sample ? '生成一页完整样片' : '批量生成课程'} close={() => setDialog(null)}>
+        <Modal title={mode === 'audio' ? '生成口播配音' : mode === 'video' ? '按已有配音生成视频' : sample ? '生成一页完整样片' : '批量生成课程'} close={() => setDialog(null)}>
+          {dialog === 'generate' && <Field label="生成内容"><select value={mode} onChange={e => setGenerationMode(e.target.value as ProductionMode)}>
+            <option value="audio">仅生成配音</option><option value="video">按已有配音生成视频</option><option value="full">配音和视频</option>
+          </select></Field>}
+          {missingVoice && <p role="alert">「{missingVoice.title}」缺少当前讲稿的整页配音，请先选择「仅生成配音」。</p>}
           <div className="notice">
             <Sparkles size={18} />
             <div>
@@ -2385,7 +2372,7 @@ export default function App() {
             <Button onClick={() => setDialog(null)}>返回编辑</Button>
             <Button
               primary
-              disabled={!!busy || !productionPages.length}
+              disabled={!!busy || !productionPages.length || !!missingVoice}
               onClick={() =>
                 void act('提交任务', async () => {
                   const saved = await api.saveCourse(productionCourse);
@@ -2396,6 +2383,7 @@ export default function App() {
                     slideIds: productionPages.map((s) => s.id),
                     budgetMicros: Math.round(budget * 1000000),
                     sample,
+                    mode,
                   });
                   setDialog(null);
                   setToast('任务已创建，可在制作任务中查看进度。');
@@ -2439,7 +2427,7 @@ export default function App() {
             </label>
           ))}
           <p className="subtle-note">
-            正式导出前需完成逐页审核。字幕按音频段落对齐，段内时间为估算，需试听核对。
+            所有页面生成后即可导出。字幕按音频段落对齐，段内时间为估算，需试听核对。
           </p>
           <div className="modal-actions">
             <Button onClick={() => setDialog(null)}>取消</Button>
@@ -2477,15 +2465,15 @@ export default function App() {
               <p>上传照片、人物视频和清晰的参考声音。没有云服务时，可先导入真人录音制作纯课件视频。</p>
             </li>
             <li>
-              <b>调整气口，先做样片</b>
-              <p>用 [停顿500ms] 插入停顿，设置读法、语速与版式，生成并确认一页完整样片。</p>
+              <b>调整气口与版式</b>
+              <p>用 [停顿500ms] 插入停顿，设置读法、语速与版式。可选一页生成样片查看效果。</p>
             </li>
             <li>
               <b>批量生成与逐页检查</b>
               <p>出现问题时只修改对应页面。旧产物保留，新版本单独生成。</p>
             </li>
             <li>
-              <b>审核后导出</b>
+              <b>导出课程</b>
               <p>导出成片、字幕、口播音频及工程包。首次正式使用模型前，需要真实素材验收。</p>
             </li>
           </ol>

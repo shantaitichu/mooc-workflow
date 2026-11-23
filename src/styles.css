@@ -578,15 +578,12 @@ p {
   background: #c4cdd1;
   flex-shrink: 0;
 }
-.status-dot.approved {
+.status-dot.generated {
   background: #3d9c7c;
 }
 .status-dot.stale,
 .status-dot.empty {
   background: #d2a85d;
-}
-.status-dot.review {
-  background: #6c99bc;
 }
 .slide-panel-bottom {
   padding: 13px 15px;
@@ -647,14 +644,19 @@ p {
   background: #fff;
 }
 .preview-viewport {
+  position: relative;
   width: 100%;
   aspect-ratio: 16/9;
   overflow: hidden;
   border-radius: 6px;
   box-shadow: 0 0 0 1px #d4ded9;
 }
-.preview-viewport > video,
-.preview-viewport > .layout-stage {
+.preview-page {
+  position: absolute;
+  inset: 0;
+}
+.preview-page > video,
+.preview-page > .layout-stage {
   width: 100%;
   height: 100%;
   display: block;
@@ -951,7 +953,7 @@ p {
 .preview-footer {
   padding: 18px 17px;
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 8px;
   background: #fcfdfd;
   border-top: 1px solid #edf0f1;

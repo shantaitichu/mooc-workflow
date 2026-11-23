@@ -11,14 +11,13 @@
     "build": "tsc --noEmit && vite build && node scripts/build.mjs",
     "start": "electron .",
     "server": "tsx server/index.ts",
-    "test": "tsx --test tests/*.test.ts",
-    "test:ui": "playwright test",
     "typecheck": "tsc --noEmit",
     "package:win": "npm run build && electron-builder --win nsis --x64",
     "package:dir": "npm run build && electron-builder --dir --win --x64",
     "setup:cloud": "node scripts/setup-cloud.mjs",
     "build:server": "node scripts/build-server.mjs",
-    "format": "prettier --write src desktop shared server tests scripts",
+    "format": "prettier --write src desktop shared server scripts",
+    "setup:joins": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/page-join/build.ps1",
     "setup:media": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-media.ps1"
   },
   "dependencies": {
@@ -54,10 +53,11 @@
     "vite": "^7.2.0"
   },
   "build": {
+    "beforePack": "scripts/build-page-join.cjs",
     "appId": "cn.moocstudio.desktop",
     "productName": "慕课工坊",
     "directories": {
-      "output": "release/production-history"
+      "output": "release/direct-export"
     },
     "files": [
       "dist/**",

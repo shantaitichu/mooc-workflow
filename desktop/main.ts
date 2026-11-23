@@ -1,3 +1,5 @@
+import { pageJoin } from '../shared/page-join';
+import { joinPath, prepareJoin } from './page-join';
 import { mediaResponse } from './media-response';
 import { captionPng } from './caption-raster';
 import { savedCutFile, splitMotion, suggestMotionCuts } from './speaker-media';
@@ -71,6 +73,16 @@ async function main() {
     };
   }
   const handlers: Record<string, (...args: any[]) => any> = {
+    preparePageJoin: async (id: unknown, slideId: unknown, nextId: unknown, key: unknown) => {
+      const course = store.get(z.uuid().parse(id));
+      const selected = z.uuid().parse(slideId);
+      const i = course.slides.findIndex(s => s.id === selected);
+      const next = z.uuid().parse(nextId);
+      const spec = i >= 0 && pageJoin(course, course.slides[i], course.slides.find(s => s.id === next));
+      if (!spec || spec.key !== key) return null;
+      await prepareJoin(store,course.id,spec,await media.ffmpeg());
+      return `mooc://join/${course.id}/${spec.key}`;
+    },
     previewColor: async (x: unknown, y: unknown) => {
       const contents = window!.webContents;
       const zoom = contents.getZoomFactor();
@@ -301,6 +313,8 @@ async function main() {
         motionCutSchema.parse(cut),
         z.number().int().nonnegative().parse(budget),
       ),
+    addLocalMotion: (id: unknown, item: unknown, kind: unknown) =>
+      production.addLocalMotion(z.uuid().parse(id), z.uuid().parse(item), z.enum(['cut', 'video']).parse(kind)),
     suggestMotionCuts: async (id: unknown) =>
       suggestMotionCuts(store, z.uuid().parse(id), await media.ffmpeg()),
     splitMotion: async (id: unknown, range?: unknown) => {
@@ -367,6 +381,7 @@ async function main() {
             slideIds: z.array(z.uuid()).min(1).max(500),
             budgetMicros: z.number().int().nonnegative().max(1e12),
             sample: z.boolean(),
+            mode: z.enum(['full', 'audio', 'video']).optional(),
             batchId: z.uuid().optional(),
             recordingId: z.uuid().optional(),
             operation: z.enum(['resume', 'audio', 'video']).optional(),
@@ -382,7 +397,6 @@ async function main() {
           perSlide: z.boolean(),
           audio: z.boolean(),
           project: z.boolean(),
-          allowUnreviewed: z.boolean().optional(),
         })
         .parse(raw);
       const result = await dialog.showOpenDialog(window!, {
@@ -430,6 +444,10 @@ async function main() {
         const text = z.string().max(200).parse(url.searchParams.get('text'));
         const bytes = new Uint8Array(captionPng(text, size));
         return new Response(bytes, { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' } });
+      }
+      if (url.hostname === 'join') {
+        const [id, key] = url.pathname.slice(1).split('/');
+        return mediaResponse(joinPath(store,z.uuid().parse(id),z.string().regex(/^[0-9a-f]{64}$/).parse(key)),request);
       }
       if (url.hostname !== 'asset') return new Response('', { status: 404 });
       const [courseId, assetId] = url.pathname.slice(1).split('/');

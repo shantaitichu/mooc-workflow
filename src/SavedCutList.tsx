@@ -64,6 +64,7 @@ interface Props {
   connectionAction: () => void;
   connectionLabel: string;
   generate: (cut: SavedMotionCut, budget: number) => void;
+  addLocal: (cut: SavedMotionCut) => void;
   remove: (cut: SavedMotionCut) => void;
 }
 export function SavedCutList({
@@ -73,6 +74,7 @@ export function SavedCutList({
   connectionAction,
   connectionLabel,
   generate,
+  addLocal,
   remove,
 }: Props) {
   const cuts = course.speaker.savedCuts ?? [];
@@ -86,12 +88,12 @@ export function SavedCutList({
         </h2>
       </header>
       {cuts.length === 0 ? (
-        <div className="motion-shelf-empty">在上方时间线上截取片段，点击「保存选段」后可在这里挑选生成。</div>
+        <div className="motion-shelf-empty">在上方截取并保存片段，再从这里预览、挑选加入动作库。</div>
       ) : (
         <>
           {problem && (
             <div className="cut-service">
-              <small>{problem}</small>
+              <small>可选的云端衔接处理 · {problem}　原选段可直接在本地入库。</small>
               <button onClick={connectionAction}>{connectionLabel}</button>
             </div>
           )}
@@ -99,10 +101,14 @@ export function SavedCutList({
             {cuts.map((cut) => {
               const source = course.assets.find((a) => a.id === cut.sourceId);
               const generated = course.speaker.motions.some(
-                (m) => m.cutId === cut.id && readyMotion(course, m),
+                (m) => m.origin !== 'local' && m.cutId === cut.id && readyMotion(course, m),
               );
               const durationMs = cut.endMs - cut.startMs;
-              const budget = motionCutSpec(durationMs, frame).budgetMicros;
+              const budget =
+                durationMs >= 120 && durationMs <= 28800
+                  ? motionCutSpec(durationMs, frame).budgetMicros
+                  : undefined;
+              const added = course.speaker.motions.some((m) => m.origin === 'local' && m.cutId === cut.id);
               const preview = previewId === cut.id;
               return (
                 <article key={cut.id} aria-label={cut.name} className="saved-cut">
@@ -124,27 +130,36 @@ export function SavedCutList({
                       {preview ? '收起预览' : '预览选段'}
                     </button>
                     <OpenMediaLocation courseId={course.id} id={cut.id} kind="cut" />
+                    <button
+                      className="button primary"
+                      disabled={!!busy || added || !source?.info.transparent}
+                      onClick={() => addLocal(cut)}
+                    >
+                      {added ? '原选段已入库' : '将原选段加入动作库'}
+                    </button>
                     {generated ? (
                       <span>已生成</span>
                     ) : (
-                      <button
-                        className="button primary"
-                        disabled={!!busy || !!problem || !source?.info.transparent}
-                        onClick={() => {
-                          if (
-                            window.confirm(
-                              '生成「' +
-                                cut.name +
-                                '」并加入动作库？首尾衔接和抠像预算上限为 ' +
-                                money(budget) +
-                                '。',
+                      budget !== undefined && (
+                        <button
+                          className="button"
+                          disabled={!!busy || !!problem || !source?.info.transparent}
+                          onClick={() => {
+                            if (
+                              window.confirm(
+                                '生成「' +
+                                  cut.name +
+                                  '」并加入动作库？首尾衔接和抠像预算上限为 ' +
+                                  money(budget) +
+                                  '。',
+                              )
                             )
-                          )
-                            generate(cut, budget);
-                        }}
-                      >
-                        生成动作素材 · {money(budget)}
-                      </button>
+                              generate(cut, budget);
+                          }}
+                        >
+                          生成动作素材 · {money(budget)}
+                        </button>
+                      )
                     )}
                     <button
                       className="icon-button"

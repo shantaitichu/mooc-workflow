@@ -127,6 +127,8 @@ export async function actorTrack(
     durationMs: number;
     sourceMs?: number;
     inMs?: number;
+    /** Only used when preparing a reusable asset with matched idle endpoints. */
+    matchIdleEnds?: boolean;
     crop?: Crop;
   }[],
   totalMs: number,
@@ -136,36 +138,22 @@ export async function actorTrack(
   const dir = mkdtempSync(path.join(tmpdir(), 'mooc-actor-')),
     parts: string[] = [];
   const total = Math.max(1, Math.round(totalMs / 40));
-  async function part(start: number, count: number, clip?: string, sourceMs?: number, inMs = 0, crop?: Crop) {
+  async function part(start: number, count: number, clip?: (typeof clips)[number]) {
     if (count <= 0) return;
-    const args = [
-      '-y',
-      '-v',
-      'error',
-      '-stream_loop',
-      '-1',
-      '-ss',
-      String(((start * 40) % idleMs) / 1000),
-      ...actorInput(idle),
-    ];
+    const args = ['-y', '-v', 'error'];
+    if (!clip || clip.matchIdleEnds)
+      args.push('-stream_loop', '-1', '-ss', String(((start * 40) % idleMs) / 1000), ...actorInput(idle));
     let filter = '[0:v]' + nativeTrack + '[out]';
     if (clip) {
-      args.push('-ss', String(inMs / 1000), ...actorInput(clip));
-      const fade = Math.max(1, Math.min(6, Math.floor((count - 1) / 2)));
-      const amount = 'max(0,min(1,min((N-1)/' + fade + ',(' + count + '-N)/' + fade + ')))';
-      const speed = sourceMs ? Math.min(1, (count * 40) / sourceMs) : 1;
-      filter =
-        '[0:v]' +
-        nativeTrack +
-        '[idle];[1:v]setpts=' +
-        speed +
-        '*(PTS-STARTPTS),' +
-        fitAction(frame, crop) +
-        ",tpad=stop_mode=clone:stop_duration=1[action];[idle][action]blend=all_expr='A*(1-(" +
-        amount +
-        '))+B*(' +
-        amount +
-        ")'[out]";
+      args.push('-ss', String((clip.inMs ?? 0) / 1000), ...actorInput(clip.file));
+      const speed = clip.sourceMs ? Math.min(1, (count * 40) / clip.sourceMs) : 1;
+      const action = `setpts=${speed}*(PTS-STARTPTS),${fitAction(frame, clip.crop)},tpad=stop_mode=clone:stop_duration=1`;
+      filter = `[0:v]${action}[out]`;
+      if (clip.matchIdleEnds) {
+        const frames = Math.max(1, Math.min(6, Math.floor((count - 1) / 2)));
+        const weight = `max(0,min(1,min((N-1)/${frames},(${count}-N)/${frames})))`;
+        filter = `[0:v]${nativeTrack}[idle];[1:v]${action}[gesture];[idle][gesture]blend=all_expr='A*(1-(${weight}))+B*(${weight})'[out]`;
+      }
     }
     const file = path.join(dir, parts.length + '.webm');
     await run(
@@ -181,7 +169,7 @@ export async function actorTrack(
       const from = Math.round(c.startMs / 40),
         end = Math.min(total, Math.round((c.startMs + c.durationMs) / 40));
       await part(cursor, from - cursor);
-      await part(from, end - from, c.file, c.sourceMs, c.inMs, c.crop);
+      await part(from, end - from, c);
       cursor = end;
     }
     await part(cursor, total - cursor);

@@ -27,7 +27,7 @@ export function motionCutSpec(durationMs: number, frame?: { width?: number; heig
 
 export function resolveTrack(course: Course, slide: Slide, durationMs: number) {
   const ordered = [...(slide.motionTrack ?? [])].sort((a, b) => a.startMs - b.startMs);
-  return ordered.map((cue, i) => {
+  const clips = ordered.map((cue, i) => {
     const motion = course.speaker.motions.find((m) => m.id === cue.motionId && m.reviewed);
     if (!motion) throw new Error('动作轨道引用了未验收或已移除的素材，请重新选择。');
     const asset = course.assets.find((a) => a.id === motion.assetId);
@@ -37,11 +37,34 @@ export function resolveTrack(course: Course, slide: Slide, durationMs: number) {
     if (next && snapMs(next.startMs) === startMs) throw new Error('两个动作不能从同一帧开始。');
     if (startMs >= durationMs)
       throw new Error('动作「' + motion.name + '」起点超出本页配音，请移动或删除该标记。');
-    const length = Math.min(
-      snapMs(asset.info.durationMs),
-      durationMs - startMs,
-      next ? snapMs(next.startMs) - startMs : Infinity,
-    );
-    return { cue, motion, asset, startMs, durationMs: length };
+    const length = Math.max(frameMs, snapMs(asset.info.durationMs));
+    const anchor = Math.min(length - frameMs, snapMs(cue.anchorMs ?? 0));
+    const origin = startMs - anchor;
+    return {
+      cue,
+      motion,
+      asset,
+      origin,
+      start: Math.max(0, origin),
+      end: Math.min(durationMs, origin + length),
+    };
   });
+  for (let i = 1; i < clips.length; i++) {
+    const a = clips[i - 1],
+      b = clips[i];
+    if (a.end <= b.start) continue;
+    const middle = snapMs((a.cue.startMs + b.cue.startMs) / 2);
+    const cut = Math.max(a.cue.startMs + frameMs, b.start, Math.min(b.cue.startMs, middle, snapMs(a.end)));
+    a.end = cut;
+    b.start = cut;
+  }
+  return clips.map(({ cue, motion, asset, origin, start, end }) => ({
+    cue,
+    motion,
+    asset,
+    startMs: start,
+    durationMs: end - start,
+    inMs: start - origin,
+    sourceMs: cue.anchorMs === undefined ? asset.info.durationMs! : end - start,
+  }));
 }

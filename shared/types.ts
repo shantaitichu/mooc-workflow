@@ -61,6 +61,8 @@ export interface Segment {
   take?: number;
 }
 export interface MotionCue {
+  /** Source frame aligned to startMs. Absent for older cues timed from the clip start. */
+  anchorMs?: number;
   id: string;
   motionId: string;
   startMs: number;
@@ -96,10 +98,10 @@ export interface Slide {
   shortBackground: 'loop' | 'freeze';
   keepBackgroundAudio: boolean;
   pagePauseMs: number;
-  reviewedFingerprint?: string;
-  approvedSampleFingerprint?: string;
 }
 export interface MotionAsset {
+  origin?: 'local';
+  anchorMs?: number;
   cutId?: string;
   idleHash?: string;
   referenceHash?: string;
@@ -150,6 +152,7 @@ export interface BatchPage {
   error?: string;
 }
 export interface ProductionBatch {
+  mode?: ProductionMode;
   id: string;
   createdAt: string;
   label: string;
@@ -168,7 +171,6 @@ export interface Course {
   speech: SpeechSettings;
   composition: CompositionSettings;
   layoutPresets?: { id: string; name: string; settings: CompositionSettings }[];
-  transitionMs?: number;
   slides: Slide[];
   speaker: SpeakerProfile;
   assets: Asset[];
@@ -280,14 +282,15 @@ export interface ExportOptions {
   perSlide: boolean;
   audio: boolean;
   project: boolean;
-  allowUnreviewed?: boolean;
 }
 export interface ImportResult {
   course: Course;
   warnings: string[];
   stagedSlides?: Slide[];
 }
+export type ProductionMode = 'full' | 'audio' | 'video';
 export interface ProductionRequest {
+  mode?: ProductionMode;
   batchId?: string;
   operation?: PageOperation;
   recordingId?: string;
@@ -298,6 +301,7 @@ export interface ProductionRequest {
 }
 export interface DesktopAPI {
   state(): Promise<WorkspaceState>;
+  preparePageJoin(courseId: string, slideId: string, nextId: string, key: string): Promise<string | null>;
   previewColor(x: number, y: number): Promise<string>;
   createCourse(title: string): Promise<Course>;
   saveCourse(course: Course): Promise<Course>;
@@ -334,6 +338,7 @@ export interface DesktopAPI {
   ): Promise<string>;
   cutPortrait(courseId: string, assetId: string): Promise<string>;
   createMotionFromCut(courseId: string, cut: MotionCut, budgetMicros: number): Promise<Course>;
+  addLocalMotion(courseId: string, id: string, kind: 'cut' | 'video'): Promise<Course>;
   suggestMotionCuts(courseId: string): Promise<MotionCut[]>;
   splitMotion(courseId: string, cut?: MotionCut): Promise<Course>;
   cloneVoice(courseId: string): Promise<void>;

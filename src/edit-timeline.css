@@ -173,7 +173,60 @@
   border-style: dashed;
 }
 .edit-lane .motion-event {
-  background: #786044;
+  background: transparent;
+  width: 14px;
+  margin-left: -6px;
+  padding: 0;
+  border: 0;
+  overflow: visible;
+  border-radius: 0;
+  color: #ffcf86;
+}
+.motion-rail .motion-event::before {
+  content: '';
+  position: absolute;
+  inset: 0 1px;
+  background: currentColor;
+  clip-path: polygon(0 0, 100% 0, 100% 20%, 58% 34%, 58% 100%, 42% 100%, 42% 34%, 0 20%);
+}
+.motion-rail .motion-event span {
+  position: absolute;
+  left: 14px;
+  pointer-events: none;
+}
+.motion-rail .motion-event.chosen {
+  color: #fff;
+  outline: none;
+  box-shadow: none;
+}
+.edit-console footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+.edit-console footer > small {
+  grid-column: 1 / -1;
+}
+.edit-console footer .track-tools {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  border-left: 1px solid var(--rule);
+  padding-left: 12px;
+}
+.motion-item .motion-anchor {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.motion-anchor input {
+  width: 72px;
+}
+@media (max-width: 940px) {
+  .edit-console footer {
+    grid-template-columns: 1fr;
+  }
 }
 .edit-playhead {
   position: absolute;
